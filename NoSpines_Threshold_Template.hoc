@@ -1,0 +1,308 @@
+// Threshold spacetests using a binary search method.
+//
+// Program flow:
+// 	Takes location range, Gaussian width for time distribution, and location increments.
+//	Also takes type of run: AMPA only, NMDA only, or both.
+// 	Records number of synapses at which a single action potential is fired.
+//	Also may record voltage at soma (later)
+
+// Updated to take a starting seed and to work with a cell template instead of the old ball and stick.
+
+// Updated to use variable AMPA conductance.
+
+strdef filename
+
+proc ThreshSpace() { local AMPAc,UPPERLIM,resetHere,locRange,gaussTime,repStat,incrBy,found,branchLength,toggle,matInd,jvar,stSeed localobj search_ind,finMat,floovec,cell
+// Runs the whole test.
+	// Inputs:
+	// $1: locRange is the range to be uniformly sampled in space
+	// $2: gaussTime is the width of the Gaussian to be sampled for timing
+	// $3: repStat is the number of repetitions for each location, to collect statistics in variation
+	// $4: incrBy is the distance in microns each trial is separated by.
+	// $5: branchLength is the number of spines on the tested branch.
+	// $6: toggle is the kind of synapse: 0 BOTH, 1 AMPA, 2 NMDA
+	// $s7: filename.
+	// $8: the starting seed
+	// $o9: the cell itself
+	// $10: AMPA conductance, with normal .0005 umho
+
+	UPPERLIM = 10000 // If the number of synapses goes above this, the trial moves on.
+
+	locRange = $1
+	gaussTime = $2
+	repStat = $3
+	incrBy = $4
+	branchLength = $5
+	toggle = $6
+	filename = $s7
+	stSeed = $8
+	cell = $o9
+	AMPAc = $10
+
+	// The binary search vector holding indices. Order: lower bound, current test number, upper bound.	
+	search_ind = resetVec(200)
+
+	floovec = new Vector(1,((branchLength-locRange)/incrBy)+1) 
+	// For the (test) case where incrBy is larger than locRange
+	if (incrBy >= locRange) {
+		floovec = new Vector(1,(branchLength/incrBy))
+	}
+	floovec.floor()
+	finMat = new Matrix(floovec.x[0]-1,repStat)
+
+	for r_ind = 0,repStat-1 {
+		seed = (stSeed+r_ind)*(r_ind+stSeed)
+		matInd = -1
+
+		for (l_ind=0;l_ind<(branchLength-locRange);l_ind=l_ind+incrBy) {
+			// For each run, search_ind starts from the previous threshold level
+			found = 0
+			matInd = matInd+1
+
+			if (search_ind.x[1] == -1) {
+				resetHere = UPPERLIM-1
+			} else {
+				resetHere = search_ind.x[1]
+			}
+
+			search_ind = resetVec(resetHere)
+
+			while (found != 1) {
+				// found variable is 1 when AP is fired at synnum n+1 but not at synnum n
+				found = testSyns(search_ind.x[1],locRange,gaussTime,toggle,seed,l_ind,cell,AMPAc)				
+					// Sees if this synapse number works
+				print search_ind.x[1]
+
+				// Setting an upper limit for # synapses tested
+				if (search_ind.x[1] > UPPERLIM) {
+					found = 1
+					search_ind.x[1] = -1
+				}
+
+				search_ind = binSearch(search_ind,found)
+					// If synapse number doesn't work, changes the search index and upper limit
+
+			}
+			finMat.x[matInd][r_ind] = search_ind.x[1] + 1
+				// Saves final synapse number to the matrix
+			jvar = printf("Iter %d, loc %d: %d\n",r_ind,l_ind,search_ind.x[1])
+		}
+	}
+
+	saveSpace(finMat,filename)
+}
+
+/*------------------ MAIN FUNCTIONS ----------------------*/
+
+func testSyns() { local AMPAc, search_ind, locRange, gaussTime, toggle, seed, l_ind, found localobj r2, tlist, tlist2, apc
+	// If an AP fires at search_ind and search_ind+1, returns 2.
+	// If no AP fires at either, returns 0.
+	// If AP fired at search_ind+1 and not search_ind (it's at threshold), returns 1.
+	//
+	// Inputs:
+	// $1: search_ind is how many synapses to use
+	// $2: locRange is the testing range
+	// $3: gaussTime is the width of the Gaussian for the time distribution
+	// $4: toggle is the usual synapse type ID
+	// $5: seed is for the norm dist for time and the unif dist for space.
+	// $6: l_ind is where the test is starting.
+	// $o7: the cell
+	// $8: AMPA conductance (normal .0005 umho)
+
+	search_ind = $1
+	locRange = $2
+	gaussTime = $3
+	toggle = $4
+	seed = $5
+	l_ind = $6
+	AMPAc = $8
+
+	r2 = new Vector(2,0)
+
+	// Runs for search_ind and search_ind+1
+	for ts_ind = 0,1 {
+
+		tlist = new List()
+		tlist2 = new List() 
+
+		tlist = setSyns(search_ind+ts_ind,locRange,gaussTime,toggle,seed,l_ind,$o7,AMPAc)
+		if (toggle==0) { 
+			tlist2 = setSyns(search_ind+ts_ind,locRange,gaussTime,2,seed,l_ind,$o7,AMPAc) 
+		}
+
+		// Puts an APCount object at the axon
+		$o7.axon {
+			apc = new APCount(0.5)
+			apc.thresh = 0
+			apc.n = 0
+		}
+
+		//Takes tlist to adjust tstop.
+		runTest(tlist) 
+
+		// Sees if an AP fired
+		if (apc.n > 0) {
+			if (ts_ind==0) {
+				return 2
+			} else {
+			r2.x[ts_ind] = 1
+			}
+		}
+	}
+
+	return r2.sum()
+}
+
+obfunc binSearch() { 
+	// Adjusts the searchVec based on results from testSyns.
+	// 
+	// Inputs:
+	// $o1: search_ind is a vector; the first element is the number of synapses being tested 
+	// $2: found tells what to do with the search vector. 0 is none, 1 is threshold, 2 is both.
+
+	// If too low
+	if ($2 == 0) {
+		$o1.x[0] = $o1.x[1]
+		if ($o1.x[2] == $o1.x[1]) {
+			$o1.x[1] = $o1.x[1]*2
+			$o1.x[2] = $o1.x[1]
+		} else {
+			$o1.x[1] = (($o1.x[2]-$o1.x[1])/2)+$o1.x[1]
+			$o1.floor()
+		}
+
+	}
+
+	// If too high
+	if ($2 == 2) {
+		$o1.x[2] = $o1.x[1]
+		$o1.x[1] = (($o1.x[1]-$o1.x[0])/2)+$o1.x[0]
+		$o1.floor()
+	}
+
+	return $o1
+}
+
+proc saveSpace() { localobj mat, f 
+	// Takes a matrix and saves it.
+	//
+	// Inputs: 
+	// $o1: the matrix to be saved (rows are location, columns are trial)
+	// $s2: filename with the full directory
+
+	mat = $o1
+	f = new File()
+	f.wopen($s2)
+	mat.fprint(f, " %g")
+	f.close()
+}
+
+obfunc resetVec() { localobj vec
+	// Gives the index vector given some general starting point. It's a 3-element vector where the 
+	// first element is the lower bound, middle is current index, last is upper bound. The function
+	// starts the upper bound at the current index value, since the search pattern works by doubling.
+	//
+	// Input:
+	// $1: the number of synapses to start out with.
+
+	vec = new Vector(3,0)
+	vec.x[1] = $1
+	vec.x[2] = $1
+
+	return vec
+}
+
+/*------------------ SUB FUNCTIONS -----------------------*/
+
+// In testSyns() 
+obfunc setSyns() { local s_ind localobj tlist,r,normr,svec,tvec
+	// Creates a list of placed and timed synapses. Does not deal with BOTH case (creates AMPA for 
+	// 0 and 1 toggle and NMDA for 2) because that's taken care of in testSyns().
+	//
+	// Inputs:
+	// $1: synapse number.
+	// $2: locRange, how widely synapses are distributed.
+	// $3: gaussTime, the width of the Gaussian used in sampling onset times.
+	// $4: toggle is explained above; slightly different for this function since it does one at a time.
+	// $5: seed
+	// $6: l_ind is the spine this test is starting on.
+	// $o7: the cell
+	// $8: AMPA conductance (normal .0005 umho), used only when toggle is 0 or 1
+	// Output:
+	// A single list of one kind of synapse; preset locations and firing times.
+
+	tlist = makeSyns($4,$1)
+
+	r = new Random($5)
+	r.uniform($6,$6+$2)
+	normr = new Random($5*10)
+	normr.normal(0,$3) 
+
+	svec = new Vector($1)
+	tvec = new Vector($1)
+
+	svec.setrand(r)
+	svec.floor()
+	tvec.setrand(normr)
+	tvec.add((-1)*tvec.min()+2)
+
+	for s_ind = 0, $1-1 {
+		$o7.dend[svec.x[s_ind]] {
+			tlist.o(s_ind).loc(.5)
+			tlist.o(s_ind).onset() = tvec.x[s_ind]
+			if ($4!=2) {
+				tlist.o(s_ind).gmax() = $8
+			}
+		}
+	}
+
+	return tlist
+}
+
+// In testSyns()
+proc runTest() { local i localobj vec
+	// Initializes cell and runs to tstop, which is 100 + last firing time.
+	// Input:
+	// $o1: tlist.
+
+	vec = giveTimes($o1)
+
+	init()
+	tstop = vec.max() + 100
+	
+	while (t<tstop) {
+		fadvance()
+	}
+}
+
+// In setSyns() 
+obfunc makeSyns() { local i localobj tlist
+	// Takes kind of synapses and number and creates a list of them. 0 and 1 make AMPA, 2 makes NMDA.
+	//
+	// Inputs:
+	// $1: toggle
+	// $2: number of synapses.
+	// Output:
+	// tlist 
+
+	tlist = new List()
+	if ($1!=2) {
+		for i=0, ($2-1) tlist.append(new syn_g())
+	} else {
+		for i=0, ($2-1) tlist.append(new nmda())
+	}
+	return tlist
+}
+
+// In runTest() and setSyns()
+obfunc giveTimes() { local i localobj vec
+	// Takes synapse list and makes a vector of all onset times.
+	// Input:
+	// $o1 is the synapse list.
+
+	vec = new Vector()
+	for i = 0,$o1.count()-1 {
+		vec.append($o1.o(i).onset())
+	}
+	return vec
+}

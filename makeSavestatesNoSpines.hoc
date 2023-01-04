@@ -1,0 +1,72 @@
+/* 
+Uses the makeCell*.hoc files in parallel. Also the new ball and stick template.
+*/
+
+/************* Loading necessary files *********************/
+
+load_file("BallStick_NoSpines.hoc")
+
+// Makes savestates for dendrites 200-1000 microns and voltages -55 to -85 mV.
+
+/************* The procs ****************/
+
+strdef mcVS,fName,filename
+objref savestate
+proc mcVolt() { local voltInput,length localobj cell
+	// Inputs:
+	// $1 is v_init
+	// $2 is length
+
+	voltInput = $1
+	length = $2
+
+	// Makes cell with desired voltage and length
+	cell = new Cell(length,voltInput)
+	v_init = voltInput
+
+	makeSv(length)
+		// makeSv() makes the savestate for the cell type; the file is labelled with length and Vm
+}
+
+proc makeSv() { localobj f,sv
+	// Makes a savestate with labels for length and voltage.
+	// Does not set v_init: that must be declared before calling makeSv()
+		// Input:
+		// $1 is the length of the ball and stick model's dendrite.
+
+	tstop = 1000
+	init1()
+		// init1 used because no savestate has been made yet
+	
+	while (t<tstop) {
+		fadvance()
+	}
+
+	sprint(fName,"BLen%dstdstt%d.dat",$1,v_init*-1)
+	f = new File(fName)
+	sv = new SaveState()
+	sv.save()
+	sv.fwrite(f)
+	f.close()
+}
+
+proc init1() {
+	// An init proc if no savestate has been made yet.
+	// Needs v_init to be declared prior to calling.
+  	finitialize(v_init)
+    t=0
+    fcurrent()
+    frecord_init()
+}
+
+/************************************************************/
+/**************** The actual script *************************/
+/************************************************************/
+
+
+	for vo_ind = 1,7 {
+		for le_ind = 1,5 {
+				mcVolt(((vo_ind*5)+50)*-1,le_ind*200)
+		}
+	}
+
